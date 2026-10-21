@@ -106,6 +106,43 @@ fn x11_ime_spot_waits_for_the_input_method() {
     );
 }
 
+#[allow(dead_code)]
+fn reset_ime_is_public(window: &winit::window::Window) {
+    window.reset_ime();
+}
+
+#[test]
+fn linux_reset_ime_discards_the_composition() {
+    // `Window::reset_ime` resets the input method when focus moves between fields. X11 resets the
+    // input context before the next key reaches the input method; Wayland disables and re-enables
+    // text input in two commits, so the compositor deactivates the input method, and sends the
+    // state that enabling resets again.
+    let events = source("linux/x11/event_processor.rs");
+    let process_event = section(&events, "pub fn process_event<", "\n    }\n");
+    let (before, after) = process_event
+        .split_once("self.process_xevent(xev, &mut callback);")
+        .expect("process_event doesn't process the event");
+    assert!(
+        before.contains("self.handle_ime_requests(&mut callback);")
+            && after.contains("self.handle_ime_requests(&mut callback);"),
+        "IME requests aren't handled before and after each event"
+    );
+    let context = source("linux/x11/ime/context.rs");
+    assert!(context.contains("(xconn.xlib.XmbResetIC)(self.ic)"), "X11 doesn't reset the context");
+
+    let state = source("linux/wayland/window/state.rs");
+    let reset = section(&state, "pub fn reset_ime(&self) -> bool {", "\n    }\n");
+    let disable = reset.find("text_input.disable();").expect("Wayland reset doesn't disable");
+    let enable = reset.find("text_input.enable();").expect("Wayland reset doesn't enable");
+    assert!(
+        reset[disable..enable].contains("text_input.commit();"),
+        "Wayland reset doesn't commit between disabling and enabling"
+    );
+    for request in ["set_content_type_by_purpose", "set_cursor_rectangle"] {
+        assert!(reset[enable..].contains(request), "Wayland reset doesn't restore `{request}`");
+    }
+}
+
 /// A method in `WinitView`'s `define_class!` block.
 fn view_method<'a>(view: &'a str, signature: &str) -> &'a str {
     section(view, signature, "\n        }\n")
