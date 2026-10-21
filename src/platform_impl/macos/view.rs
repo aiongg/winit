@@ -1183,6 +1183,7 @@ impl WinitView {
                     platform_specific: KeyEventExtra {
                         text_with_all_modifiers: None,
                         key_without_modifiers: logical_key.clone(),
+                        key_with_command: logical_key.clone(),
                     },
                 };
 
@@ -1325,7 +1326,8 @@ fn backspace_event(state: ElementState) -> KeyEvent {
         repeat: false,
         platform_specific: KeyEventExtra {
             text_with_all_modifiers: Some(SmolStr::new("\u{7f}")),
-            key_without_modifiers: key,
+            key_without_modifiers: key.clone(),
+            key_with_command: key,
         },
     }
 }
