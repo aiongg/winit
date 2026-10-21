@@ -978,18 +978,21 @@ impl XkbKeymap {
         self.latin_layouts.get(layout as usize).copied().unwrap_or(true)
     }
 
-    /// The letter `keycode` types on the keymap's first Latin layout, when `layout` isn't Latin.
+    /// The character `keycode` types without modifiers on the keymap's first Latin layout, when
+    /// `layout` isn't Latin. Letters are lowercase.
     ///
     /// Shortcuts such as Ctrl+C are defined by Latin letters; this lets toolkits match them on
-    /// a Russian or Greek layout the way other Linux toolkits do.
-    pub fn latin_letter(&self, layout: xkb_layout_index_t, keycode: xkb_keycode_t) -> Option<char> {
+    /// a Russian or Greek layout the way other Linux toolkits do. A character other than a
+    /// letter says the key has no Latin letter: with Dvorak and Russian, the key that types `й`
+    /// gives `'`, and Ctrl on it is no Ctrl+Q.
+    pub fn latin_char(&self, layout: xkb_layout_index_t, keycode: xkb_keycode_t) -> Option<char> {
         if self.is_latin_layout(layout) {
             return None;
         }
         let latin_layout = self.latin_layouts.iter().position(|&latin| latin)?;
         let keysym = level_one_keysym(self.keymap, latin_layout as xkb_layout_index_t, keycode);
-        let letter = char::from_u32(unsafe { (XKBH.xkb_keysym_to_utf32)(keysym) })?;
-        letter.is_ascii_alphabetic().then(|| letter.to_ascii_lowercase())
+        let c = char::from_u32(unsafe { (XKBH.xkb_keysym_to_utf32)(keysym) })?;
+        (!c.is_control()).then(|| c.to_ascii_lowercase())
     }
 
     #[cfg(x11_platform)]
@@ -1111,6 +1114,7 @@ mod tests {
 
     use super::*;
 
+    const KEY_ESC: xkb_keycode_t = 9;
     const KEY_1: xkb_keycode_t = 10;
     const KEY_C: xkb_keycode_t = 54;
     const KEY_Q: xkb_keycode_t = 24;
@@ -1145,19 +1149,28 @@ mod tests {
             let Some(keymap) = keymap(&format!("us,{layout}"), "") else { return };
             assert!(keymap.is_latin_layout(0), "us");
             assert!(!keymap.is_latin_layout(1), "{layout} is taken as Latin");
-            assert_eq!(keymap.latin_letter(1, KEY_C), Some('c'), "{layout}");
-            assert_eq!(keymap.latin_letter(1, KEY_Q), Some('q'), "{layout}");
-            assert_eq!(keymap.latin_letter(1, KEY_1), None, "{layout}: a digit key");
-            assert_eq!(keymap.latin_letter(0, KEY_C), None, "{layout}: the US group");
+            assert_eq!(keymap.latin_char(1, KEY_C), Some('c'), "{layout}");
+            assert_eq!(keymap.latin_char(1, KEY_Q), Some('q'), "{layout}");
+            assert_eq!(keymap.latin_char(1, KEY_1), Some('1'), "{layout}: a digit key");
+            assert_eq!(keymap.latin_char(1, KEY_ESC), None, "{layout}: Escape");
+            assert_eq!(keymap.latin_char(0, KEY_C), None, "{layout}: the US group");
         }
+    }
+
+    #[test]
+    fn dvorak_gives_its_own_keys_on_non_latin_layouts() {
+        let Some(keymap) = keymap("us,ru", "dvorak,") else { return };
+        assert!(!keymap.is_latin_layout(1));
+        assert_eq!(keymap.latin_char(1, KEY_C), Some('j'));
+        assert_eq!(keymap.latin_char(1, KEY_Q), Some('\''), "Dvorak has no letter there");
     }
 
     #[test]
     fn latin_group_after_a_non_latin_one() {
         let Some(keymap) = keymap("ru,us", "") else { return };
         assert!(!keymap.is_latin_layout(0));
-        assert_eq!(keymap.latin_letter(0, KEY_C), Some('c'));
-        assert_eq!(keymap.latin_letter(1, KEY_C), None);
+        assert_eq!(keymap.latin_char(0, KEY_C), Some('c'));
+        assert_eq!(keymap.latin_char(1, KEY_C), None);
     }
 
     #[test]
@@ -1166,7 +1179,7 @@ mod tests {
         {
             let Some(keymap) = keymap(layout, variant) else { return };
             assert!(keymap.is_latin_layout(0), "{layout}({variant}) isn't taken as Latin");
-            assert_eq!(keymap.latin_letter(0, KEY_C), None, "{layout}({variant})");
+            assert_eq!(keymap.latin_char(0, KEY_C), None, "{layout}({variant})");
         }
     }
 
@@ -1174,6 +1187,6 @@ mod tests {
     fn no_latin_letter_without_a_latin_layout() {
         let Some(keymap) = keymap("ru,gr", "") else { return };
         assert!(!keymap.is_latin_layout(0) && !keymap.is_latin_layout(1));
-        assert_eq!(keymap.latin_letter(0, KEY_C), None);
+        assert_eq!(keymap.latin_char(0, KEY_C), None);
     }
 }
