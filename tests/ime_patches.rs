@@ -169,3 +169,29 @@ fn macos_key_committed_through_ime_is_sent_once() {
         "a key committed through IME is sent again as KeyboardInput"
     );
 }
+
+// `ImeStartup` is plain Rust, so its policy tests run on every platform.
+#[allow(dead_code)]
+#[path = "../src/platform_impl/macos/ime_startup.rs"]
+mod ime_startup;
+
+#[test]
+fn macos_first_apple_korean_key_is_retried_once() {
+    // On the first key in a freshly started app, Apple Korean can answer with `insertText` and the
+    // raw compatibility jamo instead of starting a composition, so g k s typed ㅎㅏㄴ instead of
+    // 한. That one key is interpreted again before it is sent to the app, under the conditions
+    // `ImeStartup` checks (rust-windowing/winit#4744).
+    let view = source("macos/view.rs");
+    let key_down = view_method(&view, "fn key_down(");
+    assert!(
+        key_down.contains(
+            "let retry = self.ivars().ime_startup.borrow_mut().finish(serial, same_context);"
+        ),
+        "keyDown doesn't retry the first key"
+    );
+    let insert_text = view_method(&view, "fn insert_text(");
+    assert!(
+        insert_text.contains("self.ivars().ime_startup.borrow_mut().insert(&string);"),
+        "insertText doesn't report to the retry policy"
+    );
+}
