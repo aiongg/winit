@@ -1313,7 +1313,8 @@ impl Window {
     /// - **X11:** Resets the window's input context (`XmbResetIC`).
     /// - **Wayland:** Disables and re-enables text input, then restores the purpose and cursor
     ///   area.
-    /// - **iOS / Android / Web / Windows / macOS / Orbital:** Unsupported.
+    /// - **Windows:** Cancels the composition string (`ImmNotifyIME` with `CPS_CANCEL`).
+    /// - **iOS / Android / Web / macOS / Orbital:** Unsupported.
     ///
     /// [`Ime::Preedit`]: crate::event::Ime::Preedit
     #[inline]

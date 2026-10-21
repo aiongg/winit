@@ -143,6 +143,20 @@ fn linux_reset_ime_discards_the_composition() {
     }
 }
 
+#[test]
+fn windows_reset_ime_cancels_the_composition() {
+    // `CPS_CANCEL` discards the composition string; `CPS_COMPLETE` would commit it instead. The
+    // IME's own end-of-composition messages clear the preedit.
+    let ime = source("windows/ime.rs");
+    assert!(
+        ime.contains("ImmNotifyIME(self.himc, NI_COMPOSITIONSTR, CPS_CANCEL, 0)"),
+        "the composition isn't cancelled"
+    );
+    let window = source("windows/window.rs");
+    let reset = section(&window, "pub fn reset_ime(&self) {", "\n    }\n");
+    assert!(reset.contains(".cancel_composition()"), "reset_ime doesn't cancel the composition");
+}
+
 /// A method in `WinitView`'s `define_class!` block.
 fn view_method<'a>(view: &'a str, signature: &str) -> &'a str {
     section(view, signature, "\n        }\n")
