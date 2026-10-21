@@ -76,3 +76,39 @@ fn x11_replaced_input_context_is_focused() {
         "a replaced input context isn't focused"
     );
 }
+
+/// A method in `WinitView`'s `define_class!` block.
+fn view_method<'a>(view: &'a str, signature: &str) -> &'a str {
+    section(view, signature, "\n        }\n")
+}
+
+#[test]
+fn macos_composition_commits_after_marked_text_is_cleared() {
+    // winit 0.30.13 treats `insertText` as an IME commit only while marked text is left. Input
+    // methods that end a composition with `unmarkText` first lost the committed text, and Apple
+    // Korean, which clears its marked text before inserting the key typed after a syllable (`한`
+    // then `5`), lost that key. `insertText` commits when a composition was started
+    // (rust-windowing/winit#4650, the 0.30 backport of #4651), and a commit outside a key press
+    // resets the state itself, since no key follows to do it (#4748).
+    let view = source("macos/view.rs");
+    let set_marked_text = view_method(&view, "fn set_marked_text(");
+    assert!(
+        set_marked_text.contains("self.ivars().pending_commit.set(true);"),
+        "setMarkedText doesn't start a pending commit"
+    );
+    let insert_text = view_method(&view, "fn insert_text(");
+    assert!(
+        insert_text.contains("if pending_commit && ime_enabled && !is_control {"),
+        "insertText commits only while marked text is left"
+    );
+    assert!(
+        insert_text.contains("if self.ivars().in_key_down.get() {")
+            && insert_text.contains("self.ivars().ime_state.set(ImeState::Ground);"),
+        "a commit outside a key press swallows the next key"
+    );
+    let attributes = view_method(&view, "fn valid_attributes_for_marked_text(");
+    assert!(
+        attributes.contains("NSString::from_str(\"NSUnderline\")"),
+        "validAttributesForMarkedText lost the underline attribute"
+    );
+}
