@@ -55,26 +55,106 @@ fn windows_ime_cursor_is_read_only_when_reported() {
 }
 
 #[test]
-fn x11_replaced_input_context_is_focused() {
+fn x11_input_context_outlives_disallowing_ime() {
     // Toolkits allow IME when a text field gains focus and disallow it when the field loses it
-    // (egui does). winit 0.30.13 replaces the window's input context each time and leaves focusing
-    // the new one to the next focus event, which never comes while the window keeps the focus, so
-    // the input method doesn't follow the field. The replacement is focused once the queued
-    // requests are handled (rust-windowing/winit#4727).
+    // (egui does). winit 0.30.13 destroys the window's input context each time and creates a new
+    // one, which resets the input method's state for the window (Vietnamese Telex turns off) and
+    // stays unfocused until the next focus event, which never comes while the window keeps the
+    // focus. The window keeps one context: allowing IME focuses it, disallowing resets and
+    // unfocuses it. This also covers rust-windowing/winit#4727.
     let ime = source("linux/x11/ime/mod.rs");
+    let set_ime_allowed = section(&ime, "pub fn set_ime_allowed(", "\n    }\n");
     assert!(
-        ime.contains("allowed: bool,\n    ) -> Result<bool, ImeContextCreationError> {"),
-        "set_ime_allowed doesn't say whether it replaced the context"
+        !set_ime_allowed.contains("remove_context"),
+        "set_ime_allowed destroys the input context"
+    );
+    let context = source("linux/x11/ime/context.rs");
+    assert!(
+        !context.contains("none_style"),
+        "a context with IME disallowed is created with another input style"
     );
     let events = source("linux/x11/event_processor.rs");
+    let allow =
+        section(&events, "ImeRequest::Allow(window_id, allowed) => {", "\n                },\n");
+    for call in ["ime.focus(window_id)", "ime.reset(window_id)", "ime.unfocus(window_id)"] {
+        assert!(allow.contains(call), "an IME allow request doesn't call `{call}`");
+    }
+}
+
+#[test]
+fn x11_ime_spot_waits_for_the_input_method() {
+    // Setting the IME spot is a synchronous XIM request. Keys an input method forwards back while
+    // the client waits for the reply are filtered again by Xlib and reach the input method as new
+    // key presses; Vietnamese engines that fix words with forwarded BackSpaces garble the text
+    // (rust-windowing/winit#4777, storytold/wordcraft#2932). Spots are queued and sent once no
+    // event is queued and the input method has been quiet for a while.
+    let events = source("linux/x11/event_processor.rs");
+    let position = section(&events, "ImeRequest::Position(window_id, x, y) => {", "},");
+    assert!(!position.contains("send_xim_spot"), "an IME spot is sent as soon as it's requested");
+    let send = section(&events, "pub fn send_ime_spots(&mut self) {", "\n    }\n");
+    assert!(send.contains("self.ime_busy_until"), "IME spots don't wait for the input method");
+    assert!(send.contains("self.poll()"), "IME spots are sent while events are queued");
+    let filtered = section(&events, "// Don't process event if it was filtered.", "return;");
     assert!(
-        events.contains("Ok(true) => ime_focus = Some(window_id),"),
-        "a replaced input context isn't remembered for focusing"
+        filtered.contains("self.ime_busy_until = Some("),
+        "events taken by the input method don't hold IME spots back"
     );
+    let event_loop = source("linux/x11/mod.rs");
     assert!(
-        events.contains("let _ = ime.get_mut().focus(window_id);"),
-        "a replaced input context isn't focused"
+        event_loop.contains("self.event_processor.send_ime_spots();"),
+        "the event loop doesn't send IME spots held back"
     );
+}
+
+#[allow(dead_code)]
+fn reset_ime_is_public(window: &winit::window::Window) {
+    window.reset_ime();
+}
+
+#[test]
+fn linux_reset_ime_discards_the_composition() {
+    // `Window::reset_ime` resets the input method when focus moves between fields. X11 resets the
+    // input context before the next key reaches the input method; Wayland disables and re-enables
+    // text input in two commits, so the compositor deactivates the input method, and sends the
+    // state that enabling resets again.
+    let events = source("linux/x11/event_processor.rs");
+    let process_event = section(&events, "pub fn process_event<", "\n    }\n");
+    let (before, after) = process_event
+        .split_once("self.process_xevent(xev, &mut callback);")
+        .expect("process_event doesn't process the event");
+    assert!(
+        before.contains("self.handle_ime_requests(&mut callback);")
+            && after.contains("self.handle_ime_requests(&mut callback);"),
+        "IME requests aren't handled before and after each event"
+    );
+    let context = source("linux/x11/ime/context.rs");
+    assert!(context.contains("(xconn.xlib.XmbResetIC)(self.ic)"), "X11 doesn't reset the context");
+
+    let state = source("linux/wayland/window/state.rs");
+    let reset = section(&state, "pub fn reset_ime(&self) -> bool {", "\n    }\n");
+    let disable = reset.find("text_input.disable();").expect("Wayland reset doesn't disable");
+    let enable = reset.find("text_input.enable();").expect("Wayland reset doesn't enable");
+    assert!(
+        reset[disable..enable].contains("text_input.commit();"),
+        "Wayland reset doesn't commit between disabling and enabling"
+    );
+    for request in ["set_content_type_by_purpose", "set_cursor_rectangle"] {
+        assert!(reset[enable..].contains(request), "Wayland reset doesn't restore `{request}`");
+    }
+}
+
+#[test]
+fn windows_reset_ime_cancels_the_composition() {
+    // `CPS_CANCEL` discards the composition string; `CPS_COMPLETE` would commit it instead. The
+    // IME's own end-of-composition messages clear the preedit.
+    let ime = source("windows/ime.rs");
+    assert!(
+        ime.contains("ImmNotifyIME(self.himc, NI_COMPOSITIONSTR, CPS_CANCEL, 0)"),
+        "the composition isn't cancelled"
+    );
+    let window = source("windows/window.rs");
+    let reset = section(&window, "pub fn reset_ime(&self) {", "\n    }\n");
+    assert!(reset.contains(".cancel_composition()"), "reset_ime doesn't cancel the composition");
 }
 
 /// A method in `WinitView`'s `define_class!` block.
@@ -137,7 +217,8 @@ fn macos_text_inserted_outside_a_key_press_is_committed() {
     let insert_text = view_method(&view, "fn insert_text(");
     assert!(
         insert_text.contains(
-            "} else if !self.ivars().in_key_down.get()\n                && self.ivars().ime_allowed.get()"
+            "} else if !self.ivars().in_key_down.get()\n                && \
+             self.ivars().ime_allowed.get()"
         ),
         "text inserted outside a key press is dropped"
     );
@@ -164,7 +245,8 @@ fn macos_key_committed_through_ime_is_sent_once() {
     let key_down = view_method(&view, "fn key_down(");
     assert!(
         key_down.contains(
-            "let had_ime_input = self.ivars().committed_in_key_down.replace(false) || had_ime_input;"
+            "let had_ime_input = self.ivars().committed_in_key_down.replace(false) || \
+             had_ime_input;"
         ),
         "a key committed through IME is sent again as KeyboardInput"
     );
