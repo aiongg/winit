@@ -222,6 +222,21 @@ fn macos_key_committed_through_ime_is_sent_once() {
     );
 }
 
+#[test]
+fn macos_reset_ime_discards_the_composition() {
+    // `Window::reset_ime` ends a composition when the caret moves to other text with IME still
+    // allowed. On macOS it has the input method discard its marked text, so the abandoned text
+    // isn't continued or committed in the next field.
+    let view = source("macos/view.rs");
+    let reset_ime = section(&view, "pub(super) fn reset_ime(", "\n    }\n");
+    assert!(
+        reset_ime.contains("input_context.discardMarkedText();"),
+        "reset_ime leaves the input method's composition"
+    );
+    let delegate = source("macos/window_delegate.rs");
+    assert!(delegate.contains("self.view().reset_ime();"), "reset_ime isn't passed to the view");
+}
+
 // `ImeStartup` and `ImeDocument` are plain Rust, so their tests run on every platform.
 #[allow(dead_code)]
 #[path = "../src/platform_impl/macos/ime_startup.rs"]
