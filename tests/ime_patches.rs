@@ -126,3 +126,23 @@ fn macos_disallowing_ime_discards_the_composition() {
         "disallowing IME leaves the input method's composition"
     );
 }
+
+#[test]
+fn macos_text_inserted_outside_a_key_press_is_committed() {
+    // The emoji picker inserts its text with `insertText` outside any key press and without a
+    // composition. winit 0.30.13 reports `insertText` only as part of a key press or a
+    // composition, so the emoji was dropped. Such text is committed (rust-windowing/winit#4749,
+    // the 0.30 backport of #4748).
+    let view = source("macos/view.rs");
+    let insert_text = view_method(&view, "fn insert_text(");
+    assert!(
+        insert_text.contains(
+            "} else if !self.ivars().in_key_down.get()\n                && self.ivars().ime_allowed.get()"
+        ),
+        "text inserted outside a key press is dropped"
+    );
+    // #4748's `selectedRange` change for dictation is left out: reporting a selection turns on
+    // press-and-hold for every held key (an accent menu instead of key repeat).
+    let selected_range = view_method(&view, "fn selected_range(&self) -> NSRange {");
+    assert!(!selected_range.contains("marked_text"), "selectedRange reports a selection");
+}
