@@ -146,3 +146,26 @@ fn macos_text_inserted_outside_a_key_press_is_committed() {
     let selected_range = view_method(&view, "fn selected_range(&self) -> NSRange {");
     assert!(!selected_range.contains("marked_text"), "selectedRange reports a selection");
 }
+
+#[test]
+fn macos_key_committed_through_ime_is_sent_once() {
+    // Apple Korean answers Space with no syllable in progress with `setMarkedText(" ")`,
+    // `insertText(" ")` and `setMarkedText("")`. The last call resets winit 0.30.13's IME state,
+    // so the key arrived both as `Ime::Commit(" ")` and as `KeyboardInput` with text " ": two
+    // spaces. A key whose text was committed isn't sent as `KeyboardInput` unless AppKit forwards
+    // it as a command (Enter); the goal of rust-windowing/winit#4478, whose changes don't reach
+    // this call order.
+    let view = source("macos/view.rs");
+    let insert_text = view_method(&view, "fn insert_text(");
+    assert!(
+        insert_text.contains("self.ivars().committed_in_key_down.set(true);"),
+        "a commit in keyDown isn't recorded"
+    );
+    let key_down = view_method(&view, "fn key_down(");
+    assert!(
+        key_down.contains(
+            "let had_ime_input = self.ivars().committed_in_key_down.replace(false) || had_ime_input;"
+        ),
+        "a key committed through IME is sent again as KeyboardInput"
+    );
+}
