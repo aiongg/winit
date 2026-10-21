@@ -1314,7 +1314,8 @@ impl Window {
     /// - **Wayland:** Disables and re-enables text input, then restores the purpose and cursor
     ///   area.
     /// - **Windows:** Cancels the composition string (`ImmNotifyIME` with `CPS_CANCEL`).
-    /// - **iOS / Android / Web / macOS / Orbital:** Unsupported.
+    /// - **macOS:** Discards the marked text (`NSTextInputContext discardMarkedText`).
+    /// - **iOS / Android / Web / Orbital:** Unsupported.
     ///
     /// [`Ime::Preedit`]: crate::event::Ime::Preedit
     #[inline]
