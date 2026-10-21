@@ -53,3 +53,26 @@ fn windows_ime_cursor_is_read_only_when_reported() {
         "WM_IME_COMPOSITION doesn't pass its flags on"
     );
 }
+
+#[test]
+fn x11_replaced_input_context_is_focused() {
+    // Toolkits allow IME when a text field gains focus and disallow it when the field loses it
+    // (egui does). winit 0.30.13 replaces the window's input context each time and leaves focusing
+    // the new one to the next focus event, which never comes while the window keeps the focus, so
+    // the input method doesn't follow the field. The replacement is focused once the queued
+    // requests are handled (rust-windowing/winit#4727).
+    let ime = source("linux/x11/ime/mod.rs");
+    assert!(
+        ime.contains("allowed: bool,\n    ) -> Result<bool, ImeContextCreationError> {"),
+        "set_ime_allowed doesn't say whether it replaced the context"
+    );
+    let events = source("linux/x11/event_processor.rs");
+    assert!(
+        events.contains("Ok(true) => ime_focus = Some(window_id),"),
+        "a replaced input context isn't remembered for focusing"
+    );
+    assert!(
+        events.contains("let _ = ime.get_mut().focus(window_id);"),
+        "a replaced input context isn't focused"
+    );
+}
