@@ -37,3 +37,27 @@ fn macos_title_bar_drags_reach_the_app() {
         "the view isn't given the window's setting"
     );
 }
+
+// The scroll-phase policy is plain Rust over winit's own `TouchPhase`, so its tests run here.
+#[cfg(wayland_platform)]
+mod event {
+    pub use winit::event::TouchPhase;
+}
+#[cfg(wayland_platform)]
+#[path = "../src/platform_impl/linux/wayland/seat/pointer/scroll.rs"]
+mod scroll;
+
+#[test]
+fn wayland_pixel_wheels_report_moved() {
+    // winit 0.30.13 starts a finger gesture (`TouchPhase::Started`) for any axis event without
+    // discrete steps, and only `axis_stop` ends it, which wheels need not send. A wheel, wheel tilt
+    // or continuous source reporting only pixel deltas then left a gesture open, and egui
+    // kept the modifiers it started with: Ctrl zoom stayed on after Ctrl was released. Such events
+    // report `Moved`, under the rules `scroll::phase` tests (storytold/pdfcraft#1569).
+    let pointer = source("linux/wayland/seat/pointer/mod.rs");
+    let axis = section(&pointer, "PointerEventKind::Axis {", "pointer_data.phase = phase;");
+    assert!(
+        axis.contains("let phase = scroll::phase("),
+        "axis events don't take their phase from the scroll source"
+    );
+}
