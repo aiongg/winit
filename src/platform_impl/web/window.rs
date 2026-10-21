@@ -336,10 +336,10 @@ impl Inner {
     #[inline]
     pub fn set_ime_purpose(&self, _purpose: ImePurpose) {
         // Currently not implemented
-
-        #[inline]
-        pub fn reset_ime(&self) {}
     }
+
+    #[inline]
+    pub fn reset_ime(&self) {}
 
     #[inline]
     pub fn focus_window(&self) {
