@@ -195,8 +195,8 @@ impl KeyContext<'_> {
         let is_latin_layout = self.keymap.is_latin_layout(layout);
         let latin_key = self
             .keymap
-            .latin_letter(layout, keycode)
-            .map(|letter| Key::Character(SmolStr::new(letter.encode_utf8(&mut [0; 4]))));
+            .latin_char(layout, keycode)
+            .map(|c| Key::Character(SmolStr::new(c.encode_utf8(&mut [0; 4]))));
 
         let mut event =
             KeyEventResults::new(self, keycode, !repeat && state == ElementState::Pressed);
