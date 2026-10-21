@@ -112,3 +112,17 @@ fn macos_composition_commits_after_marked_text_is_cleared() {
         "validAttributesForMarkedText lost the underline attribute"
     );
 }
+
+#[test]
+fn macos_disallowing_ime_discards_the_composition() {
+    // Toolkits disallow IME when a text field loses focus. winit 0.30.13 then forgets the marked
+    // text but doesn't tell the input method, which continues the composition once IME is allowed
+    // again: the abandoned syllable comes back in the next field (`하`, then `가` in the next
+    // field, became `학`). The input method is told to discard it (rust-windowing/winit#4745).
+    let view = source("macos/view.rs");
+    let set_ime_allowed = section(&view, "pub(super) fn set_ime_allowed(", "\n    }\n");
+    assert!(
+        set_ime_allowed.contains("input_context.discardMarkedText();"),
+        "disallowing IME leaves the input method's composition"
+    );
+}
