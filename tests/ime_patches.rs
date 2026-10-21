@@ -35,3 +35,21 @@ fn wayland_text_input_lives_until_the_seat_goes() {
         "removing the seat doesn't destroy its text input"
     );
 }
+
+#[test]
+fn windows_ime_cursor_is_read_only_when_reported() {
+    // winit 0.30.13 reads `GCS_CURSORPOS` for every composition without a target clause, whether
+    // or not `WM_IME_COMPOSITION` says the IME set it. The Microsoft Korean IME never sets it, so
+    // the cursor read as 0, before the syllable being composed. Without the flag the cursor is at
+    // the end of the composition (rust-windowing/winit#4746).
+    let ime = source("windows/ime.rs");
+    assert!(
+        ime.contains("if composition_flags & GCS_CURSORPOS != 0 {"),
+        "GCS_CURSORPOS is read unconditionally"
+    );
+    let event_loop = source("windows/event_loop.rs");
+    assert!(
+        event_loop.contains("get_composing_text_and_cursor(lparam as u32)"),
+        "WM_IME_COMPOSITION doesn't pass its flags on"
+    );
+}
