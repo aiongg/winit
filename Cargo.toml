@@ -98,7 +98,8 @@ rwh_06 = { package = "raw-window-handle", version = "0.6", features = [
 ], optional = true }
 serde = { workspace = true, optional = true }
 smol_str = "0.2.0"
-tracing = { version = "0.1.40", default-features = false }
+# Trace build: winit's events reach `log` (env_logger) as target `ime_trace`.
+tracing = { version = "0.1.40", default-features = false, features = ["log"] }
 
 [dev-dependencies]
 image = { version = "0.25.0", default-features = false, features = ["png"] }

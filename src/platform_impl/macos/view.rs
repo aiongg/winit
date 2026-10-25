@@ -23,6 +23,11 @@ use super::event::{
     scancode_to_physicalkey, KeyEventExtra,
 };
 use super::ime_document::{plain_insert, ImeDocument, PlainInsert};
+
+/// Press-and-hold trace: `RUST_LOG=ime_trace=debug`.
+macro_rules! ime_trace {
+    ($($t:tt)*) => { tracing::debug!(target: "ime_trace", $($t)*) };
+}
 use super::ime_startup::ImeStartup;
 use super::window::WinitWindow;
 use super::DEVICE_ID;
@@ -282,12 +287,14 @@ declare_class!(
         fn marked_range(&self) -> NSRange {
             trace_scope!("markedRange");
             let length = self.ivars().marked_text.borrow().length();
-            if length > 0 {
+            let range = if length > 0 {
                 NSRange::new(self.ivars().ime_document.borrow().caret(), length)
             } else {
                 // Documented to return `{NSNotFound, 0}` if there is no marked range.
                 NSRange::new(NSNotFound as NSUInteger, 0)
-            }
+            };
+            ime_trace!("markedRange -> {range:?}");
+            range
         }
 
         #[method(selectedRange)]
@@ -300,6 +307,7 @@ declare_class!(
                 .then(|| self.ivars().marked_selection.get());
             let (location, length) =
                 self.ivars().ime_document.borrow().selected_range(marked_selection);
+            ime_trace!("selectedRange -> ({location}, {length}), marked {marked_selection:?}");
             NSRange::new(location, length)
         }
 
@@ -314,8 +322,14 @@ declare_class!(
             let _ime_callback = self.begin_ime_callback();
             self.ivars().key_interpreted.set(true);
             self.ivars().ime_startup.borrow_mut().other_callback();
+            ime_trace!(
+                "setMarkedText selected={selected_range:?} replacement={replacement_range:?} in_key_down={} doc={:?}",
+                self.ivars().in_key_down.get(),
+                self.ivars().ime_document.borrow()
+            );
             // Press-and-hold marks the letter just typed while it shows the accent menu.
             let delete = self.replaced(replacement_range);
+            ime_trace!("  delete={delete:?}");
 
             // SAFETY: This method is guaranteed to get either a `NSString` or a `NSAttributedString`.
             let (marked_text, string) = if string.is_kind_of::<NSAttributedString>() {
@@ -336,6 +350,7 @@ declare_class!(
                 )
             };
 
+            ime_trace!("  marked text {:?}", string.to_string());
             // Update marked text.
             *self.ivars().marked_text.borrow_mut() = marked_text;
 
@@ -384,6 +399,7 @@ declare_class!(
         #[method(unmarkText)]
         fn unmark_text(&self) {
             trace_scope!("unmarkText");
+            ime_trace!("unmarkText in_key_down={}", self.ivars().in_key_down.get());
             let _ime_callback = self.begin_ime_callback();
             self.ivars().key_interpreted.set(true);
             self.ivars().ime_startup.borrow_mut().other_callback();
@@ -422,6 +438,7 @@ declare_class!(
             trace_scope!("attributedSubstringForProposedRange:actualRange:");
             let substring =
                 self.ivars().ime_document.borrow().substring((range.location, range.length));
+            ime_trace!("attributedSubstringForProposedRange {range:?} -> {substring:?}");
             substring.map(|(text, (location, length))| {
                 if !actual_range.is_null() {
                     unsafe { *actual_range = NSRange::new(location, length) };
@@ -472,6 +489,16 @@ declare_class!(
                 unsafe { &*string }.to_string()
             };
 
+            ime_trace!(
+                "insertText {string:?} replacement={replacement_range:?} in_key_down={} key={:?} pending_commit={} marked={} ime_state={:?} allowed={} doc={:?}",
+                self.ivars().in_key_down.get(),
+                self.ivars().key_characters.borrow(),
+                self.ivars().pending_commit.get(),
+                unsafe { self.hasMarkedText() },
+                self.ivars().ime_state.get(),
+                self.ivars().ime_allowed.get(),
+                self.ivars().ime_document.borrow()
+            );
             self.ivars().ime_startup.borrow_mut().insert(&string);
             let is_control = string.chars().next().is_some_and(|c| c.is_control());
             // WordCraft patch: commit when a composition was started (`pending_commit`, set by
@@ -495,6 +522,7 @@ declare_class!(
                 // Press-and-hold and dictation replace text they inserted before. Only the arms
                 // that deliver the text apply the replacement to `ime_document`.
                 let delete = self.replaced(replacement_range);
+                ime_trace!("  composition commit, delete={delete:?}");
                 self.ivars().ime_document.borrow_mut().insert(&string);
                 self.queue_commit(string, delete);
                 // WordCraft patch: input methods also commit outside a key press (a candidate
@@ -519,9 +547,12 @@ declare_class!(
                 // (`，` for `,`), an ideographic space, an accent picked from the press-and-hold
                 // menu with a digit.
                 let key_characters = self.ivars().key_characters.borrow().clone();
-                match plain_insert(&string, key_characters.as_deref()) {
+                let plain = plain_insert(&string, key_characters.as_deref());
+                ime_trace!("  plain insert: {plain:?}");
+                match plain {
                     PlainInsert::KeyText => {
                         let delete = self.replaced(replacement_range);
+                        ime_trace!("  key text, delete={delete:?}");
                         // The deletion goes before the key's `KeyboardInput`, which `keyDown:`
                         // sends after this returns.
                         if delete.is_some() && self.ivars().ime_allowed.get() {
@@ -532,6 +563,7 @@ declare_class!(
                     },
                     PlainInsert::Commit if self.ivars().ime_allowed.get() => {
                         let delete = self.replaced(replacement_range);
+                        ime_trace!("  commit, delete={delete:?}");
                         self.notify_ime_enabled();
                         if self.ivars().in_key_down.get() {
                             // `keyDown:` doesn't send the key's own text.
@@ -551,6 +583,12 @@ declare_class!(
         #[method(doCommandBySelector:)]
         fn do_command_by_selector(&self, _command: Sel) {
             trace_scope!("doCommandBySelector:");
+            ime_trace!(
+                "doCommandBySelector {:?} in_key_down={} ime_state={:?}",
+                _command.name(),
+                self.ivars().in_key_down.get(),
+                self.ivars().ime_state.get()
+            );
             self.ivars().key_interpreted.set(true);
             self.ivars().ime_startup.borrow_mut().other_callback();
             // We shouldn't forward any character from just committed text, since we'll end up sending
@@ -561,7 +599,7 @@ declare_class!(
             }
 
             // Commands such as arrows and Backspace move the caret or change the text.
-            self.ivars().ime_document.borrow_mut().reset();
+            self.reset_ime_document();
             self.ivars().forward_key_to_app.set(true);
 
             if unsafe { self.hasMarkedText() } && self.ivars().ime_state.get() == ImeState::Preedit
@@ -600,6 +638,12 @@ declare_class!(
             let characters =
                 unsafe { event.characters() }.map(|s| s.to_string()).unwrap_or_default();
             let modifiers = event_mods(&event).state();
+            ime_trace!(
+                "keyDown {characters:?} repeat={} ime_state={:?} doc={:?}",
+                unsafe { event.isARepeat() },
+                old_ime_state,
+                self.ivars().ime_document.borrow()
+            );
             let eligible = self.ivars().ime_allowed.get()
                 && old_ime_state == ImeState::Disabled
                 && !self.ivars().pending_commit.get()
@@ -620,7 +664,7 @@ declare_class!(
             // is not handled by IME and should be handled by the application)
             if modifiers.intersects(ModifiersState::SUPER | ModifiersState::CONTROL) {
                 // Shortcuts can change the text (undo, paste) or move the caret.
-                self.ivars().ime_document.borrow_mut().reset();
+                self.reset_ime_document();
             }
 
             if self.ivars().ime_allowed.get() {
@@ -676,6 +720,11 @@ declare_class!(
                 && !self.ivars().key_interpreted.get()
                 && !modifiers.intersects(ModifiersState::SUPER | ModifiersState::CONTROL);
 
+            ime_trace!(
+                "  keyDown done: interpreted={} had_ime_input={had_ime_input} forward={} held_for_accents={held_for_accents}",
+                self.ivars().key_interpreted.get(),
+                self.ivars().forward_key_to_app.get()
+            );
             if (!had_ime_input || self.ivars().forward_key_to_app.get()) && !held_for_accents {
                 let key_event = create_key_event(&event, true, unsafe { event.isARepeat() });
                 self.queue_event(WindowEvent::KeyboardInput {
@@ -1103,6 +1152,7 @@ impl WinitView {
     /// The deletion is an exact byte count rather than Backspace presses: toolkits delete a whole
     /// grapheme cluster (an emoji sequence, a letter and its combining accents) per Backspace.
     fn queue_commit(&self, text: String, delete: Option<ImeDeleteSurrounding>) {
+        ime_trace!("  queue Ime::Commit({text:?}) with delete {delete:?}");
         let event = WindowEvent::Ime(Ime::Commit(text));
         let Some(delete) = delete else {
             return self.queue_event(event);
@@ -1118,6 +1168,13 @@ impl WinitView {
             app_delegate.handle_window_event(window_id, event);
             view.ivars().ime_delete_surrounding.set(None);
         });
+    }
+
+    #[track_caller]
+    fn reset_ime_document(&self) {
+        let at = std::panic::Location::caller().line();
+        ime_trace!("ImeDocument reset at view.rs:{at}, was {:?}", self.ivars().ime_document.borrow());
+        self.ivars().ime_document.borrow_mut().reset();
     }
 
     pub(super) fn take_ime_delete_surrounding(&self) -> Option<ImeDeleteSurrounding> {
@@ -1147,12 +1204,13 @@ impl WinitView {
     }
 
     pub(super) fn set_ime_allowed(&self, ime_allowed: bool) {
+        ime_trace!("set_ime_allowed({ime_allowed}), was {}", self.ivars().ime_allowed.get());
         if self.ivars().ime_allowed.get() == ime_allowed {
             return;
         }
         self.ivars().ime_allowed.set(ime_allowed);
         self.ivars().ime_startup.borrow_mut().reset();
-        self.ivars().ime_document.borrow_mut().reset();
+        self.reset_ime_document();
         if self.ivars().ime_allowed.get() {
             return;
         }
@@ -1181,7 +1239,8 @@ impl WinitView {
 
     /// End the composition without committing it: the caret moved to other text.
     pub(super) fn reset_ime(&self) {
-        self.ivars().ime_document.borrow_mut().reset();
+        ime_trace!("reset_ime");
+        self.reset_ime_document();
         self.ivars().pending_commit.set(false);
         if self.ivars().marked_text.borrow().length() == 0 {
             return;
@@ -1200,6 +1259,7 @@ impl WinitView {
     }
 
     pub(super) fn reset_ime_with_request(&self, request_id: u64) {
+        ime_trace!("reset_ime_with_request({request_id})");
         if !self.ivars().ime_allowed.get() || !self.ivars().ime_reset_alive.get() {
             return;
         }
@@ -1402,7 +1462,7 @@ impl WinitView {
 
         if button_state == ElementState::Pressed {
             // A click can move the caret.
-            self.ivars().ime_document.borrow_mut().reset();
+            self.reset_ime_document();
         }
 
         self.update_modifiers(event, false);
