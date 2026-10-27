@@ -1342,8 +1342,10 @@ unsafe fn public_window_callback_inner(
             if window_state.fullscreen.is_none()
                 && window_state.window_flags.is_undecorated_top_level()
             {
+                let max_size = frame::max_outer_size(window, &window_state);
                 drop(window_state);
-                frame::keep_maximized_rect(window, unsafe { &mut *(lparam as *mut WINDOWPOS) });
+                let window_pos = unsafe { &mut *(lparam as *mut WINDOWPOS) };
+                frame::keep_maximized_rect(window, window_pos, max_size);
                 result = ProcResult::Value(0);
                 return;
             }
@@ -2249,9 +2251,10 @@ unsafe fn public_window_callback_inner(
             }
             let undecorated =
                 window_state.fullscreen.is_none() && window_flags.is_undecorated_top_level();
+            let max_size = frame::max_outer_size(window, &window_state);
             drop(window_state);
             if undecorated {
-                frame::set_max_info(window, unsafe { &mut *mmi });
+                frame::set_max_info(window, unsafe { &mut *mmi }, max_size);
             }
 
             result = ProcResult::Value(0);

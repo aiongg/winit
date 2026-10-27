@@ -93,8 +93,15 @@ pub fn taskbar_edge(taskbar: Rect, monitor: Rect) -> Option<Edge> {
 /// Without a caption, Windows sizes a maximize to the whole monitor, taskbar included, and the
 /// shell takes a caption-less window covering its monitor for a full-screen app: it drops the
 /// taskbar's backdrop (photocraft#3144) and no longer reveals an auto-hidden taskbar at its edge
-/// (photocraft#4845). `None` when the work area is empty or lies outside the monitor.
-pub fn maximized_rect(monitor: Rect, work: Rect, taskbars: &[Edge]) -> Option<Rect> {
+/// (photocraft#4845). A window with a maximum outer size (`max_size`) keeps the top-left corner
+/// and stops there, as Windows does for a decorated window. `None` when the work area is empty
+/// or lies outside the monitor.
+pub fn maximized_rect(
+    monitor: Rect,
+    work: Rect,
+    taskbars: &[Edge],
+    max_size: Option<(i32, i32)>,
+) -> Option<Rect> {
     if monitor.is_empty() || work.is_empty() || !monitor.contains(work) {
         return None;
     }
@@ -112,7 +119,12 @@ pub fn maximized_rect(monitor: Rect, work: Rect, taskbars: &[Edge]) -> Option<Re
             _ => {},
         }
     }
-    Some(if rect.is_empty() { work } else { rect })
+    let mut rect = if rect.is_empty() { work } else { rect };
+    if let Some((width, height)) = max_size {
+        rect.right = rect.right.min(rect.left.saturating_add(width.max(1)));
+        rect.bottom = rect.bottom.min(rect.top.saturating_add(height.max(1)));
+    }
+    Some(rect)
 }
 
 /// The `ptMaxPosition` and `ptMaxSize` of `MINMAXINFO`.
@@ -186,7 +198,7 @@ mod tests {
             (Rect::new(0, 0, 1872, 1080), Edge::Right),
             (Rect::new(0, 2, 1920, 1080), Edge::Top),
         ] {
-            assert_eq!(maximized_rect(MONITOR, work, &[edge]), Some(work));
+            assert_eq!(maximized_rect(MONITOR, work, &[edge], None), Some(work));
         }
     }
 
@@ -194,7 +206,7 @@ mod tests {
     fn a_maximize_on_a_monitor_left_of_and_above_the_primary_keeps_its_work_area() {
         let monitor = Rect::new(-1920, -1080, 0, 0);
         let work = Rect::new(-1920, -1032, 0, 0);
-        assert_eq!(maximized_rect(monitor, work, &[Edge::Top]), Some(work));
+        assert_eq!(maximized_rect(monitor, work, &[Edge::Top], None), Some(work));
     }
 
     #[test]
@@ -205,24 +217,43 @@ mod tests {
             (Edge::Left, Rect::new(1, 0, 1920, 1080)),
             (Edge::Right, Rect::new(0, 0, 1919, 1080)),
         ] {
-            assert_eq!(maximized_rect(MONITOR, MONITOR, &[edge]), Some(expected));
+            assert_eq!(maximized_rect(MONITOR, MONITOR, &[edge], None), Some(expected));
         }
-        assert_eq!(maximized_rect(MONITOR, MONITOR, &[]), Some(MONITOR), "no taskbar");
+        assert_eq!(maximized_rect(MONITOR, MONITOR, &[], None), Some(MONITOR), "no taskbar");
         // A second monitor's taskbar auto-hides at the bottom while the primary's is shown on
         // the left: only the auto-hidden edge gives up a pixel.
         let work = Rect::new(48, 0, 1920, 1080);
         assert_eq!(
-            maximized_rect(MONITOR, work, &[Edge::Left, Edge::Bottom]),
+            maximized_rect(MONITOR, work, &[Edge::Left, Edge::Bottom], None),
             Some(Rect::new(48, 0, 1920, 1079))
         );
     }
 
     #[test]
     fn a_work_area_outside_its_monitor_is_left_to_windows() {
-        assert_eq!(maximized_rect(MONITOR, Rect::new(0, 0, 0, 0), &[]), None);
-        assert_eq!(maximized_rect(MONITOR, Rect::new(-10, 0, 1920, 1080), &[]), None);
+        assert_eq!(maximized_rect(MONITOR, Rect::new(0, 0, 0, 0), &[], None), None);
+        assert_eq!(maximized_rect(MONITOR, Rect::new(-10, 0, 1920, 1080), &[], None), None);
         let tiny = Rect::new(0, 0, 1, 1);
-        assert_eq!(maximized_rect(tiny, tiny, &[Edge::Left, Edge::Right]), Some(tiny));
+        assert_eq!(maximized_rect(tiny, tiny, &[Edge::Left, Edge::Right], None), Some(tiny));
+    }
+
+    #[test]
+    fn a_maximize_stops_at_the_maximum_size() {
+        let work = Rect::new(0, 48, 1920, 1080);
+        assert_eq!(
+            maximized_rect(MONITOR, work, &[Edge::Top], Some((1200, 800))),
+            Some(Rect::new(0, 48, 1200, 848))
+        );
+        assert_eq!(
+            maximized_rect(MONITOR, work, &[Edge::Top], Some((4000, 4000))),
+            Some(work),
+            "larger than the work area"
+        );
+        assert_eq!(
+            maximized_rect(MONITOR, MONITOR, &[Edge::Left], Some((i32::MAX, 500))),
+            Some(Rect::new(1, 0, 1920, 500)),
+            "no overflow"
+        );
     }
 
     #[test]

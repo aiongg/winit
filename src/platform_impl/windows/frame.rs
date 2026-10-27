@@ -13,10 +13,12 @@ use windows_sys::Win32::Graphics::Gdi::{
     MONITOR_DEFAULTTOPRIMARY,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    FindWindowExW, GetWindowRect, MINMAXINFO, SWP_NOMOVE, SWP_NOSIZE, WINDOWPOS,
+    FindWindowExW, GetWindowRect, IsWindowVisible, MINMAXINFO, SWP_FRAMECHANGED, SWP_NOMOVE,
+    SWP_NOSIZE, WINDOWPOS,
 };
 
 use super::frame_math::{self, Edge, Rect};
+use super::window_state::WindowState;
 use super::{monitor, util};
 
 fn rect(rect: RECT) -> Rect {
@@ -36,15 +38,24 @@ fn monitor_rects(hmonitor: HMONITOR) -> Option<(Rect, Rect)> {
     Some((rect(info.rcMonitor), rect(info.rcWork)))
 }
 
-/// The outer rect an undecorated window maximized on `hmonitor` gets, with the monitor's rect.
-fn maximized_rect(hmonitor: HMONITOR) -> Option<(Rect, Rect)> {
+/// The outer rect an undecorated window with maximum outer size `max_size` gets when maximized on
+/// `hmonitor`, with the monitor's rect.
+fn maximized_rect(hmonitor: HMONITOR, max_size: Option<(i32, i32)>) -> Option<(Rect, Rect)> {
     let (monitor, work) = monitor_rects(hmonitor)?;
-    let target = frame_math::maximized_rect(monitor, work, &taskbar_edges(monitor))?;
+    let target = frame_math::maximized_rect(monitor, work, &taskbar_edges(monitor), max_size)?;
     Some((monitor, target))
 }
 
+/// The window's maximum outer size (`max_inner_size` with its frame), if it has one.
+pub(super) fn max_outer_size(window: HWND, state: &WindowState) -> Option<(i32, i32)> {
+    let max_size = state.max_size?.to_physical(state.scale_factor);
+    let (width, height): (u32, u32) = state.window_flags.adjust_size(window, max_size).into();
+    Some((i32::try_from(width).unwrap_or(i32::MAX), i32::try_from(height).unwrap_or(i32::MAX)))
+}
+
 /// The edges of `monitor` that have a taskbar (the primary `Shell_TrayWnd` or a secondary
-/// monitor's `Shell_SecondaryTrayWnd`), shown or hidden.
+/// monitor's `Shell_SecondaryTrayWnd`), shown or auto-hidden. Taskbars that aren't visible at
+/// all (Explorer restarting, a taskbar turned off) are skipped.
 ///
 /// `FindWindowExW` and `GetWindowRect` send no messages, so this can't block on the shell while
 /// the window procedure runs (`SHAppBarMessage` can).
@@ -60,7 +71,9 @@ fn taskbar_edges(monitor: Rect) -> Vec<Edge> {
                 break;
             }
             let mut tray_rect: RECT = unsafe { std::mem::zeroed() };
-            if unsafe { GetWindowRect(tray, &mut tray_rect) } != 0 {
+            if unsafe { IsWindowVisible(tray) } != 0
+                && unsafe { GetWindowRect(tray, &mut tray_rect) } != 0
+            {
                 edges.extend(frame_math::taskbar_edge(rect(tray_rect), monitor));
             }
             after = tray;
@@ -72,9 +85,9 @@ fn taskbar_edges(monitor: Rect) -> Vec<Edge> {
 /// `WM_GETMINMAXINFO` of an undecorated top-level window: a maximize fills the work area of the
 /// window's monitor. Where no `ptMaxSize` lands on it, Windows' value stays and
 /// [`keep_maximized_rect`] corrects the maximize.
-pub(super) fn set_max_info(window: HWND, mmi: &mut MINMAXINFO) {
+pub(super) fn set_max_info(window: HWND, mmi: &mut MINMAXINFO, max_size: Option<(i32, i32)>) {
     let hmonitor = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
-    let Some((monitor, target)) = maximized_rect(hmonitor) else {
+    let Some((monitor, target)) = maximized_rect(hmonitor, max_size) else {
         return;
     };
     let primary = unsafe { MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY) };
@@ -90,11 +103,16 @@ pub(super) fn set_max_info(window: HWND, mmi: &mut MINMAXINFO) {
 
 /// `WM_WINDOWPOSCHANGING` of a maximized undecorated top-level window: the window goes to its
 /// maximize rect on the monitor it is moving to, whatever size Windows derived from
-/// `MINMAXINFO`. A change of z-order or frame alone is left alone.
-pub(super) fn keep_maximized_rect(window: HWND, window_pos: &mut WINDOWPOS) {
-    if window_pos.flags & (SWP_NOMOVE | SWP_NOSIZE) == SWP_NOMOVE | SWP_NOSIZE
-        || !util::is_maximized(window)
-    {
+/// `MINMAXINFO`. A frame change counts too: a window maximized while decorated still has the
+/// decorated maximize rect, reaching past the work area, when its decorations go. A change of
+/// z-order alone is left alone.
+pub(super) fn keep_maximized_rect(
+    window: HWND,
+    window_pos: &mut WINDOWPOS,
+    max_size: Option<(i32, i32)>,
+) {
+    let keeps_rect = window_pos.flags & (SWP_NOMOVE | SWP_NOSIZE) == SWP_NOMOVE | SWP_NOSIZE;
+    if (keeps_rect && window_pos.flags & SWP_FRAMECHANGED == 0) || !util::is_maximized(window) {
         return;
     }
     let Some(current) = util::WindowArea::Outer.get_rect(window).ok().map(rect) else {
@@ -113,7 +131,7 @@ pub(super) fn keep_maximized_rect(window: HWND, window_pos: &mut WINDOWPOS) {
     let proposed =
         RECT { left, top, right: left.saturating_add(width), bottom: top.saturating_add(height) };
     let hmonitor = unsafe { MonitorFromRect(&proposed, MONITOR_DEFAULTTONEAREST) };
-    let Some((_, target)) = maximized_rect(hmonitor) else {
+    let Some((_, target)) = maximized_rect(hmonitor, max_size) else {
         return;
     };
     if target == rect(proposed) {

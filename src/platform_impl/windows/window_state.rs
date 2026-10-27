@@ -294,9 +294,9 @@ impl WindowFlags {
             // with `WS_CAPTION` some compositors still offset the surface by the frame: black
             // bars at the top and left, and the pointer off from what is drawn
             // (storytold/photocraft#2246). `WS_SYSMENU`, `WS_SIZEBOX` and the minimize and
-            // maximize boxes stay for Aero snap, Win+arrow keys, the taskbar menu and the
-            // minimize animation. Without a caption Windows maximizes over the taskbar;
-            // `frame.rs` keeps the maximize to the work area.
+            // maximize boxes stay for Aero snap, Win+arrow keys and the taskbar menu. Without a
+            // caption Windows maximizes over the taskbar; `frame.rs` keeps the maximize to the
+            // work area.
             style &= !(WS_CAPTION | WS_BORDER);
         }
         if self.contains(WindowFlags::CHILD) {
